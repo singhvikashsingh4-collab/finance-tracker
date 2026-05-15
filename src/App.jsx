@@ -1,73 +1,73 @@
-import { useState, useMemo, useCallback } from "react";
-import {
-  PieChart, Pie, Cell, Tooltip, ResponsiveContainer
-} from "recharts";
-import {
-  TrendingUp, TrendingDown, AlertTriangle, CheckCircle2,
-  Plus, Trash2, ChevronLeft, ChevronRight, Copy, Moon, Sun,
-  DollarSign, Target, ShieldAlert, BarChart3, Check, X,
-  CreditCard, Wallet, Landmark, Edit3
-} from "lucide-react";
+import { useState, useMemo, useCallback, useEffect } from "react";
+import { PieChart, Pie, Cell, Tooltip, ResponsiveContainer } from "recharts";
+import { TrendingUp, TrendingDown, AlertTriangle, CheckCircle2, Plus, ChevronLeft, ChevronRight, Copy, Moon, Sun, DollarSign, Target, ShieldAlert, BarChart3, Check, X, CreditCard, Wallet, Landmark, Edit3, LogOut, User } from "lucide-react";
+import { signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
+import { doc, setDoc, getDoc } from "firebase/firestore";
+import { auth, provider, db } from "./firebase";
 
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const RULE = { needs: 41, wants: 20, invest: 39 };
-
 function uid() { return Math.random().toString(36).slice(2, 9); }
-
-const DEMO_DATA = {
-  "2026-5": {
-    salary: 85000,
-    items: {
-      debt: [
-        { id: uid(), name: "Home Loan EMI", amount: 22000, settled: true },
-        { id: uid(), name: "Car Loan EMI", amount: 8500, settled: true },
-        { id: uid(), name: "Credit Card Bill", amount: 4200, settled: false },
-      ],
-      expenses: [
-        { id: uid(), name: "Groceries & Food", amount: 6000, settled: true },
-        { id: uid(), name: "Utilities & Bills", amount: 3500, settled: true },
-        { id: uid(), name: "Entertainment", amount: 2800, settled: false },
-        { id: uid(), name: "Fuel & Transport", amount: 4500, settled: true },
-      ],
-      investments: [
-        { id: uid(), name: "SIP - Equity Fund", amount: 15000, settled: true },
-        { id: uid(), name: "PPF Contribution", amount: 5000, settled: false },
-        { id: uid(), name: "NPS Contribution", amount: 3000, settled: true },
-        { id: uid(), name: "FD Deposit", amount: 10000, settled: false },
-      ],
-    }
-  }
-};
-
-const BENCHMARK = {
-  threeMonth: { needs: 38, wants: 23, invest: 39 },
-  sixMonth: { needs: 44, wants: 19, invest: 37 },
-};
-
+const BENCHMARK = { threeMonth: { needs: 38, wants: 23, invest: 39 }, sixMonth: { needs: 44, wants: 19, invest: 37 } };
 const DONUT_COLORS = { debt: "#6366f1", expenses: "#f59e0b", investments: "#10b981" };
 
+const EMPTY_MONTH = () => ({ salary: 0, items: { debt: [], expenses: [], investments: [] } });
+
 export default function App() {
+  const [user, setUser] = useState(null);
+  const [loading, setLoading] = useState(true);
   const [dark, setDark] = useState(true);
   const [year, setYear] = useState(2026);
-  const [month, setMonth] = useState(5);
-  const [allData, setAllData] = useState(DEMO_DATA);
+  const [month, setMonth] = useState(new Date().getMonth() + 1);
+  const [allData, setAllData] = useState({});
   const [editSalary, setEditSalary] = useState(false);
   const [salaryInput, setSalaryInput] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  // Auth listener
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => {
+      setUser(u);
+      setLoading(false);
+    });
+    return unsub;
+  }, []);
+
+  // Load data from Firestore when user logs in
+  useEffect(() => {
+    if (!user) return;
+    const load = async () => {
+      const ref = doc(db, "users", user.uid);
+      const snap = await getDoc(ref);
+      if (snap.exists()) {
+        setAllData(snap.data().allData || {});
+      }
+    };
+    load();
+  }, [user]);
+
+  // Save data to Firestore
+  const saveData = useCallback(async (data) => {
+    if (!user) return;
+    setSaving(true);
+    try {
+      await setDoc(doc(db, "users", user.uid), { allData: data });
+    } catch (e) { console.error(e); }
+    setSaving(false);
+  }, [user]);
 
   const monthKey = `${year}-${month}`;
-
-  const monthData = useMemo(() => {
-    if (allData[monthKey]) return allData[monthKey];
-    return { salary: 0, items: { debt: [], expenses: [], investments: [] } };
-  }, [allData, monthKey]);
+  const monthData = useMemo(() => allData[monthKey] || EMPTY_MONTH(), [allData, monthKey]);
 
   const setMonthData = useCallback((updater) => {
     setAllData(prev => {
-      const current = prev[monthKey] || { salary: 0, items: { debt: [], expenses: [], investments: [] } };
+      const current = prev[monthKey] || EMPTY_MONTH();
       const next = typeof updater === "function" ? updater(current) : updater;
-      return { ...prev, [monthKey]: next };
+      const updated = { ...prev, [monthKey]: next };
+      saveData(updated);
+      return updated;
     });
-  }, [monthKey]);
+  }, [monthKey, saveData]);
 
   const navMonth = (dir) => {
     let m = month + dir, y = year;
@@ -80,17 +80,21 @@ export default function App() {
     let nm = month + 1, ny = year;
     if (nm > 12) { nm = 1; ny++; }
     const nk = `${ny}-${nm}`;
-    setAllData(prev => ({
-      ...prev,
-      [nk]: {
-        salary: 0,
-        items: {
-          debt: monthData.items.debt.map(i => ({ ...i, id: uid(), amount: 0, settled: false })),
-          expenses: monthData.items.expenses.map(i => ({ ...i, id: uid(), amount: 0, settled: false })),
-          investments: monthData.items.investments.map(i => ({ ...i, id: uid(), amount: 0, settled: false })),
+    setAllData(prev => {
+      const updated = {
+        ...prev,
+        [nk]: {
+          salary: 0,
+          items: {
+            debt: monthData.items.debt.map(i => ({ ...i, id: uid(), amount: 0, settled: false })),
+            expenses: monthData.items.expenses.map(i => ({ ...i, id: uid(), amount: 0, settled: false })),
+            investments: monthData.items.investments.map(i => ({ ...i, id: uid(), amount: 0, settled: false })),
+          }
         }
-      }
-    }));
+      };
+      saveData(updated);
+      return updated;
+    });
     setMonth(nm); setYear(ny);
   };
 
@@ -103,12 +107,10 @@ export default function App() {
   const surplus = salary - totalCommitments;
   const settledCount = allItems.filter(i => i.settled).length;
   const settledPct = allItems.length ? Math.round((settledCount / allItems.length) * 100) : 0;
-
   const pctOf = (v) => salary > 0 ? Math.round((v / salary) * 100) : 0;
   const needsPct = pctOf(totalDebt);
   const wantsPct = pctOf(totalExpenses);
   const investPct = pctOf(totalInvestments);
-
   const needsAlert = needsPct > RULE.needs;
   const investAlert = investPct < RULE.invest && salary > 0;
 
@@ -119,35 +121,14 @@ export default function App() {
   ].filter(d => d.value > 0);
 
   const updateItem = (cat, id, field, value) => {
-    setMonthData(prev => ({
-      ...prev,
-      items: {
-        ...prev.items,
-        [cat]: prev.items[cat].map(i => i.id === id ? { ...i, [field]: value } : i)
-      }
-    }));
+    setMonthData(prev => ({ ...prev, items: { ...prev.items, [cat]: prev.items[cat].map(i => i.id === id ? { ...i, [field]: value } : i) } }));
   };
-
   const addItem = (cat) => {
-    setMonthData(prev => ({
-      ...prev,
-      items: {
-        ...prev.items,
-        [cat]: [...prev.items[cat], { id: uid(), name: "", amount: 0, settled: false }]
-      }
-    }));
+    setMonthData(prev => ({ ...prev, items: { ...prev.items, [cat]: [...prev.items[cat], { id: uid(), name: "", amount: 0, settled: false }] } }));
   };
-
   const deleteItem = (cat, id) => {
-    setMonthData(prev => ({
-      ...prev,
-      items: {
-        ...prev.items,
-        [cat]: prev.items[cat].filter(i => i.id !== id)
-      }
-    }));
+    setMonthData(prev => ({ ...prev, items: { ...prev.items, [cat]: prev.items[cat].filter(i => i.id !== id) } }));
   };
-
   const saveSalary = () => {
     const val = parseFloat(salaryInput.replace(/,/g, "")) || 0;
     setMonthData(prev => ({ ...prev, salary: val }));
@@ -163,46 +144,26 @@ export default function App() {
   const accent = "#6366f1";
   const accentLight = dark ? "rgba(99,102,241,0.15)" : "rgba(99,102,241,0.08)";
   const inputBg = dark ? "#0f0f1a" : "#f8f8ff";
-
   const fmtINR = (n) => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n);
 
   const ProgressBar = ({ pct, rule, color, alertOn }) => (
     <div style={{ position: "relative", height: 10, background: dark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.07)", borderRadius: 99, overflow: "hidden" }}>
-      <div style={{
-        height: "100%", width: `${Math.min(pct, 100)}%`,
-        background: alertOn ? "#ef4444" : color,
-        borderRadius: 99,
-        transition: "width 0.6s cubic-bezier(.4,0,.2,1)"
-      }} />
-      <div style={{
-        position: "absolute", top: 0, left: `${rule}%`,
-        width: 2, height: "100%",
-        background: alertOn ? "#fca5a5" : "rgba(255,255,255,0.5)",
-      }} />
+      <div style={{ height: "100%", width: `${Math.min(pct, 100)}%`, background: alertOn ? "#ef4444" : color, borderRadius: 99, transition: "width 0.6s cubic-bezier(.4,0,.2,1)" }} />
+      <div style={{ position: "absolute", top: 0, left: `${rule}%`, width: 2, height: "100%", background: alertOn ? "#fca5a5" : "rgba(255,255,255,0.5)" }} />
     </div>
   );
 
   const Card = ({ children, style = {} }) => (
-    <div style={{
-      background: surface, border: `1px solid ${border}`,
-      borderRadius: 24, padding: "20px 20px",
-      boxShadow: dark ? "0 4px 24px rgba(0,0,0,0.4)" : "0 4px 24px rgba(99,102,241,0.08)",
-      ...style
-    }}>{children}</div>
+    <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: 24, padding: "20px 20px", boxShadow: dark ? "0 4px 24px rgba(0,0,0,0.4)" : "0 4px 24px rgba(99,102,241,0.08)", ...style }}>{children}</div>
   );
 
-  const MetricCard = ({ icon: Icon, label, value, sub, color = accent, alert }) => (
-    <div style={{
-      background: accentLight, border: `1px solid ${border}`,
-      borderRadius: 20, padding: "16px 18px",
-      display: "flex", flexDirection: "column", gap: 8
-    }}>
+  const MetricCard = ({ icon: Icon, label, value, sub, color = accent }) => (
+    <div style={{ background: accentLight, border: `1px solid ${border}`, borderRadius: 20, padding: "16px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
         <div style={{ background: color + "22", borderRadius: 10, padding: 6, display: "flex" }}>
           <Icon size={16} color={color} />
         </div>
         <span style={{ fontSize: 12, color: muted, fontWeight: 500, letterSpacing: "0.05em", textTransform: "uppercase" }}>{label}</span>
-        {alert && <AlertTriangle size={14} color="#ef4444" style={{ marginLeft: "auto" }} />}
       </div>
       <div style={{ fontSize: 22, fontWeight: 700, color: text, fontVariantNumeric: "tabular-nums" }}>{value}</div>
       {sub && <div style={{ fontSize: 12, color: muted }}>{sub}</div>}
@@ -212,75 +173,23 @@ export default function App() {
   const LedgerSection = ({ title, cat, icon: Icon, color, total }) => (
     <div style={{ marginBottom: 24 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-        <div style={{ background: color + "22", borderRadius: 10, padding: 7, display: "flex" }}>
-          <Icon size={16} color={color} />
-        </div>
+        <div style={{ background: color + "22", borderRadius: 10, padding: 7, display: "flex" }}><Icon size={16} color={color} /></div>
         <span style={{ fontWeight: 700, color: text, fontSize: 14 }}>{title}</span>
-        <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 600, color }}>
-          {fmtINR(total)}
-        </span>
+        <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 600, color }}>{fmtINR(total)}</span>
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
         {monthData.items[cat].map(item => (
-          <div key={item.id} style={{
-            display: "flex", alignItems: "center", gap: 8,
-            background: item.settled ? (dark ? "rgba(16,185,129,0.07)" : "rgba(16,185,129,0.05)") : inputBg,
-            border: `1px solid ${item.settled ? "rgba(16,185,129,0.2)" : border}`,
-            borderRadius: 14, padding: "10px 12px",
-            transition: "all 0.2s"
-          }}>
-            <button
-              onClick={() => updateItem(cat, item.id, "settled", !item.settled)}
-              style={{
-                width: 28, height: 28, borderRadius: 8, border: `1.5px solid ${item.settled ? "#10b981" : border}`,
-                background: item.settled ? "#10b981" : "transparent",
-                display: "flex", alignItems: "center", justifyContent: "center",
-                cursor: "pointer", flexShrink: 0, transition: "all 0.2s"
-              }}
-            >
+          <div key={item.id} style={{ display: "flex", alignItems: "center", gap: 8, background: item.settled ? (dark ? "rgba(16,185,129,0.07)" : "rgba(16,185,129,0.05)") : inputBg, border: `1px solid ${item.settled ? "rgba(16,185,129,0.2)" : border}`, borderRadius: 14, padding: "10px 12px", transition: "all 0.2s" }}>
+            <button onClick={() => updateItem(cat, item.id, "settled", !item.settled)} style={{ width: 28, height: 28, borderRadius: 8, border: `1.5px solid ${item.settled ? "#10b981" : border}`, background: item.settled ? "#10b981" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0, transition: "all 0.2s" }}>
               {item.settled && <Check size={14} color="#fff" />}
             </button>
-            <input
-              value={item.name}
-              onChange={e => updateItem(cat, item.id, "name", e.target.value)}
-              placeholder="Item name..."
-              style={{
-                flex: 1, background: "transparent", border: "none", outline: "none",
-                color: item.settled ? "#10b981" : text, fontSize: 13, fontWeight: 500,
-                textDecoration: item.settled ? "line-through" : "none",
-                minWidth: 0
-              }}
-            />
-            <input
-              type="number"
-              value={item.amount || ""}
-              onChange={e => updateItem(cat, item.id, "amount", parseFloat(e.target.value) || 0)}
-              placeholder="0"
-              style={{
-                width: 90, background: "transparent", border: "none", outline: "none",
-                color: item.settled ? "#10b981" : color, fontSize: 13, fontWeight: 700,
-                textAlign: "right", fontVariantNumeric: "tabular-nums"
-              }}
-            />
-            <button
-              onClick={() => deleteItem(cat, item.id)}
-              style={{ background: "transparent", border: "none", cursor: "pointer", padding: 4, display: "flex", flexShrink: 0 }}
-            >
-              <X size={14} color={muted} />
-            </button>
+            <input value={item.name} onChange={e => updateItem(cat, item.id, "name", e.target.value)} placeholder="Item name..." style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: item.settled ? "#10b981" : text, fontSize: 13, fontWeight: 500, textDecoration: item.settled ? "line-through" : "none", minWidth: 0 }} />
+            <input type="number" value={item.amount || ""} onChange={e => updateItem(cat, item.id, "amount", parseFloat(e.target.value) || 0)} placeholder="0" style={{ width: 90, background: "transparent", border: "none", outline: "none", color: item.settled ? "#10b981" : color, fontSize: 13, fontWeight: 700, textAlign: "right", fontVariantNumeric: "tabular-nums" }} />
+            <button onClick={() => deleteItem(cat, item.id)} style={{ background: "transparent", border: "none", cursor: "pointer", padding: 4, display: "flex", flexShrink: 0 }}><X size={14} color={muted} /></button>
           </div>
         ))}
       </div>
-      <button
-        onClick={() => addItem(cat)}
-        style={{
-          marginTop: 10, display: "flex", alignItems: "center", gap: 6,
-          background: color + "11", border: `1px dashed ${color}44`,
-          borderRadius: 12, padding: "8px 14px", cursor: "pointer",
-          color, fontSize: 12, fontWeight: 600, width: "100%",
-          justifyContent: "center"
-        }}
-      >
+      <button onClick={() => addItem(cat)} style={{ marginTop: 10, display: "flex", alignItems: "center", gap: 6, background: color + "11", border: `1px dashed ${color}44`, borderRadius: 12, padding: "8px 14px", cursor: "pointer", color, fontSize: 12, fontWeight: 600, width: "100%", justifyContent: "center" }}>
         <Plus size={14} /> Add {title.split("/")[0]} Item
       </button>
     </div>
@@ -299,30 +208,47 @@ export default function App() {
           </div>
           <span style={{ fontSize: 11, color: muted, width: 30 }}>{comp}%</span>
         </div>
-        <span style={{
-          fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 99,
-          background: isGood ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)",
-          color: isGood ? "#10b981" : "#ef4444"
-        }}>
+        <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 7px", borderRadius: 99, background: isGood ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)", color: isGood ? "#10b981" : "#ef4444" }}>
           {diff > 0 ? "+" : ""}{diff}%
         </span>
       </div>
     );
   };
 
+  // Loading screen
+  if (loading) return (
+    <div style={{ minHeight: "100vh", background: "#0f0f1a", display: "flex", alignItems: "center", justifyContent: "center" }}>
+      <div style={{ color: "#6366f1", fontSize: 16, fontFamily: "sans-serif" }}>Loading...</div>
+    </div>
+  );
+
+  // Login screen
+  if (!user) return (
+    <div style={{ minHeight: "100vh", background: "#0f0f1a", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans', sans-serif" }}>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap');`}</style>
+      <div style={{ background: "#1a1a2e", border: "1px solid rgba(99,102,241,0.2)", borderRadius: 28, padding: "48px 40px", textAlign: "center", maxWidth: 380, width: "90%" }}>
+        <div style={{ fontSize: 13, color: "#6366f1", fontWeight: 700, letterSpacing: "0.1em", marginBottom: 12 }}>◆ FINVAULT</div>
+        <h1 style={{ fontSize: 26, fontWeight: 700, color: "#e2e8f0", marginBottom: 8 }}>Financial Intelligence</h1>
+        <p style={{ fontSize: 14, color: "#94a3b8", marginBottom: 32, lineHeight: 1.6 }}>Sign in to access your personal finance tracker. Your data is private and saved securely.</p>
+        <button
+          onClick={() => signInWithPopup(auth, provider)}
+          style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: "#fff", color: "#1e1b4b", border: "none", borderRadius: 14, padding: "14px 20px", cursor: "pointer", fontSize: 15, fontWeight: 700 }}
+        >
+          <svg width="20" height="20" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/><path fill="#FF3D00" d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/><path fill="#4CAF50" d="M24 44c5.166 0 9.86-1.977 13.409-5.192l-6.19-5.238A11.91 11.91 0 0 1 24 36c-5.202 0-9.619-3.317-11.283-7.946l-6.522 5.025C9.505 39.556 16.227 44 24 44z"/><path fill="#1976D2" d="M43.611 20.083H42V20H24v8h11.303a12.04 12.04 0 0 1-4.087 5.571l.003-.002 6.19 5.238C36.971 39.205 44 34 44 24c0-1.341-.138-2.65-.389-3.917z"/></svg>
+          Continue with Google
+        </button>
+        <p style={{ fontSize: 11, color: "#475569", marginTop: 20 }}>Free forever · No credit card · Your data stays private</p>
+      </div>
+    </div>
+  );
+
   return (
-    <div style={{
-      minHeight: "100vh", background: bg, fontFamily: "'DM Sans', 'Segoe UI', sans-serif",
-      color: text, transition: "all 0.3s"
-    }}>
+    <div style={{ minHeight: "100vh", background: bg, fontFamily: "'DM Sans', 'Segoe UI', sans-serif", color: text, transition: "all 0.3s" }}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=DM+Mono:wght@500&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
         input[type=number]::-webkit-inner-spin-button { -webkit-appearance: none; }
         input::placeholder { opacity: 0.4; }
-        ::-webkit-scrollbar { width: 4px; }
-        ::-webkit-scrollbar-track { background: transparent; }
-        ::-webkit-scrollbar-thumb { background: ${accent}44; border-radius: 99px; }
         @keyframes fadeSlide { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .section-anim { animation: fadeSlide 0.4s ease; }
         @keyframes pulse-alert { 0%,100% { opacity: 1; } 50% { opacity: 0.6; } }
@@ -331,16 +257,25 @@ export default function App() {
 
       <div style={{ maxWidth: 800, margin: "0 auto", padding: "0 16px 40px" }}>
 
+        {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 0 16px" }}>
           <div>
             <div style={{ fontSize: 11, color: accent, fontWeight: 700, letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 4 }}>◆ Finvault</div>
             <h1 style={{ fontSize: 22, fontWeight: 700, color: text, lineHeight: 1.2 }}>Financial Intelligence</h1>
           </div>
-          <button onClick={() => setDark(d => !d)} style={{ background: accentLight, border: `1px solid ${border}`, borderRadius: 12, padding: "9px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, color: text }}>
-            {dark ? <Sun size={16} /> : <Moon size={16} />}
-          </button>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            {saving && <span style={{ fontSize: 11, color: muted }}>Saving...</span>}
+            <img src={user.photoURL} alt="" style={{ width: 32, height: 32, borderRadius: "50%", border: `2px solid ${accent}` }} />
+            <button onClick={() => setDark(d => !d)} style={{ background: accentLight, border: `1px solid ${border}`, borderRadius: 12, padding: "9px 12px", cursor: "pointer", display: "flex", color: text }}>
+              {dark ? <Sun size={16} /> : <Moon size={16} />}
+            </button>
+            <button onClick={() => signOut(auth)} style={{ background: accentLight, border: `1px solid ${border}`, borderRadius: 12, padding: "9px 12px", cursor: "pointer", display: "flex", color: text }}>
+              <LogOut size={16} />
+            </button>
+          </div>
         </div>
 
+        {/* Month Navigator */}
         <Card style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
             <button onClick={() => navMonth(-1)} style={{ background: accentLight, border: `1px solid ${border}`, borderRadius: 10, padding: "8px 10px", cursor: "pointer", display: "flex" }}>
@@ -359,39 +294,27 @@ export default function App() {
           </button>
         </Card>
 
+        {/* Alerts */}
         {(needsAlert || investAlert) && (
           <div style={{ marginBottom: 16 }} className="section-anim">
-            {needsAlert && (
-              <div className="alert-pulse" style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 16, padding: "12px 16px", display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                <ShieldAlert size={18} color="#ef4444" />
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#ef4444" }}>Needs/Debt Overload</div>
-                  <div style={{ fontSize: 11, color: muted }}>At {needsPct}% — exceeds the 41% ceiling. Review debt obligations.</div>
-                </div>
-              </div>
-            )}
-            {investAlert && (
-              <div className="alert-pulse" style={{ background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 16, padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
-                <AlertTriangle size={18} color="#fbbf24" />
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#fbbf24" }}>Investment Deficit</div>
-                  <div style={{ fontSize: 11, color: muted }}>At {investPct}% — below the 39% target. Increase SIP allocation.</div>
-                </div>
-              </div>
-            )}
+            {needsAlert && <div className="alert-pulse" style={{ background: "rgba(239,68,68,0.1)", border: "1px solid rgba(239,68,68,0.3)", borderRadius: 16, padding: "12px 16px", display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+              <ShieldAlert size={18} color="#ef4444" />
+              <div><div style={{ fontSize: 13, fontWeight: 700, color: "#ef4444" }}>Needs/Debt Overload</div><div style={{ fontSize: 11, color: muted }}>At {needsPct}% — exceeds the 41% ceiling.</div></div>
+            </div>}
+            {investAlert && <div className="alert-pulse" style={{ background: "rgba(251,191,36,0.1)", border: "1px solid rgba(251,191,36,0.3)", borderRadius: 16, padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+              <AlertTriangle size={18} color="#fbbf24" />
+              <div><div style={{ fontSize: 13, fontWeight: 700, color: "#fbbf24" }}>Investment Deficit</div><div style={{ fontSize: 11, color: muted }}>At {investPct}% — below the 39% target.</div></div>
+            </div>}
           </div>
         )}
 
+        {/* Summary Cards */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
           <div style={{ background: accentLight, border: `1px solid ${border}`, borderRadius: 20, padding: "16px 18px", gridColumn: "1 / -1" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-              <div style={{ background: accent + "22", borderRadius: 10, padding: 6, display: "flex" }}>
-                <DollarSign size={16} color={accent} />
-              </div>
+              <div style={{ background: accent + "22", borderRadius: 10, padding: 6, display: "flex" }}><DollarSign size={16} color={accent} /></div>
               <span style={{ fontSize: 12, color: muted, fontWeight: 500, letterSpacing: "0.05em", textTransform: "uppercase" }}>Opening Balance</span>
-              <button onClick={() => { setEditSalary(true); setSalaryInput(salary.toString()); }} style={{ marginLeft: "auto", background: "transparent", border: "none", cursor: "pointer", display: "flex" }}>
-                <Edit3 size={13} color={muted} />
-              </button>
+              <button onClick={() => { setEditSalary(true); setSalaryInput(salary.toString()); }} style={{ marginLeft: "auto", background: "transparent", border: "none", cursor: "pointer", display: "flex" }}><Edit3 size={13} color={muted} /></button>
             </div>
             {editSalary ? (
               <div style={{ display: "flex", gap: 8 }}>
@@ -407,6 +330,7 @@ export default function App() {
           <MetricCard icon={CheckCircle2} label="Settlement" value={`${settledPct}%`} sub={`${settledCount}/${allItems.length} items paid`} color="#6366f1" />
         </div>
 
+        {/* Financial Matrix */}
         <Card style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
             <Target size={17} color={accent} />
@@ -425,7 +349,7 @@ export default function App() {
                 </div>
                 <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                   <span style={{ fontSize: 11, color: muted }}>Target: {row.rule}%</span>
-                  <span style={{ fontSize: 12, fontWeight: 700, color: row.alert ? "#ef4444" : row.color, fontVariantNumeric: "tabular-nums" }}>{row.pct}%</span>
+                  <span style={{ fontSize: 12, fontWeight: 700, color: row.alert ? "#ef4444" : row.color }}>{row.pct}%</span>
                 </div>
               </div>
               <ProgressBar pct={row.pct} rule={row.rule} color={row.color} alertOn={row.alert} />
@@ -434,6 +358,7 @@ export default function App() {
           ))}
         </Card>
 
+        {/* Donut Chart */}
         <Card style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
             <BarChart3 size={17} color={accent} />
@@ -445,20 +370,14 @@ export default function App() {
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie data={donutData} cx="50%" cy="50%" innerRadius={65} outerRadius={95} paddingAngle={3} dataKey="value" strokeWidth={0}>
-                      {donutData.map((entry, i) => (
-                        <Cell key={i} fill={[DONUT_COLORS.debt, DONUT_COLORS.expenses, DONUT_COLORS.investments][i]} />
-                      ))}
+                      {donutData.map((entry, i) => <Cell key={i} fill={[DONUT_COLORS.debt, DONUT_COLORS.expenses, DONUT_COLORS.investments][i]} />)}
                     </Pie>
                     <Tooltip formatter={(v) => fmtINR(v)} contentStyle={{ background: surface2, border: `1px solid ${border}`, borderRadius: 12, fontSize: 12, color: text }} />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
               <div style={{ display: "flex", justifyContent: "center", gap: 20, flexWrap: "wrap" }}>
-                {[
-                  { label: "Debt", color: DONUT_COLORS.debt, val: totalDebt },
-                  { label: "Expenses", color: DONUT_COLORS.expenses, val: totalExpenses },
-                  { label: "Investments", color: DONUT_COLORS.investments, val: totalInvestments },
-                ].map(l => (
+                {[{ label: "Debt", color: DONUT_COLORS.debt, val: totalDebt }, { label: "Expenses", color: DONUT_COLORS.expenses, val: totalExpenses }, { label: "Investments", color: DONUT_COLORS.investments, val: totalInvestments }].map(l => (
                   <div key={l.label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <div style={{ width: 10, height: 10, borderRadius: 3, background: l.color }} />
                     <span style={{ fontSize: 12, color: muted }}>{l.label}</span>
@@ -468,12 +387,11 @@ export default function App() {
               </div>
             </>
           ) : (
-            <div style={{ height: 120, display: "flex", alignItems: "center", justifyContent: "center", color: muted, fontSize: 13 }}>
-              Add entries to see your allocation chart
-            </div>
+            <div style={{ height: 120, display: "flex", alignItems: "center", justifyContent: "center", color: muted, fontSize: 13 }}>Add entries to see your allocation chart</div>
           )}
         </Card>
 
+        {/* Benchmarking */}
         <Card style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
             <TrendingUp size={17} color={accent} />
@@ -485,7 +403,7 @@ export default function App() {
               const comp = idx === 0 ? BENCHMARK.threeMonth : BENCHMARK.sixMonth;
               return (
                 <div key={label} style={{ background: surface2, borderRadius: 16, padding: "12px 14px", border: `1px solid ${border}` }}>
-                  <div style={{ fontSize: 11, color: accent, fontWeight: 700, marginBottom: 10, letterSpacing: "0.05em" }}>{label}</div>
+                  <div style={{ fontSize: 11, color: accent, fontWeight: 700, marginBottom: 10 }}>{label}</div>
                   <BenchmarkRow label="Needs" cur={needsPct} comp={comp.needs} field="needs" />
                   <BenchmarkRow label="Wants" cur={wantsPct} comp={comp.wants} field="wants" />
                   <BenchmarkRow label="Invest" cur={investPct} comp={comp.invest} field="invest" />
@@ -493,9 +411,9 @@ export default function App() {
               );
             })}
           </div>
-          <div style={{ marginTop: 10, fontSize: 11, color: muted, textAlign: "center" }}>3-month and 6-month averages are simulated benchmarks</div>
         </Card>
 
+        {/* Ledger */}
         <Card>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
             <Wallet size={17} color={accent} />
