@@ -5,36 +5,39 @@ import { signInWithRedirect, getRedirectResult, signOut, onAuthStateChanged } fr
 import { doc, setDoc, getDoc } from "firebase/firestore";
 import { auth, provider, db } from "./firebase";
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ALL constants and components are at MODULE level — never inside App().
+// This is the single most important rule: if a component is defined inside
+// App(), React sees a brand-new function on every render and unmounts/remounts
+// the DOM node, which steals focus from whatever the user is typing in.
+// ─────────────────────────────────────────────────────────────────────────────
+
 const MONTHS = ["January","February","March","April","May","June","July","August","September","October","November","December"];
 const RULE = { needs: 41, wants: 20, invest: 39 };
 const BENCHMARK = { threeMonth: { needs: 38, wants: 23, invest: 39 }, sixMonth: { needs: 44, wants: 19, invest: 37 } };
-const DONUT_COLORS = { debt: "#6366f1", expenses: "#f59e0b", investments: "#10b981" };
-const EMPTY_MONTH = () => ({ salary: 0, items: { debt: [], expenses: [], investments: [] } });
-function uid() { return Math.random().toString(36).slice(2, 9); }
+const DC = { debt: "#6366f1", expenses: "#f59e0b", investments: "#10b981" };
+const EMPTY = () => ({ salary: 0, items: { debt: [], expenses: [], investments: [] } });
+const uid = () => Math.random().toString(36).slice(2, 9);
+const fmtINR = n => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n || 0);
 
-// ── Stable input: never loses focus ──────────────────────────────────────────
-// Key rule: this component is defined at module level (never inside another
-// component) so React never unmounts/remounts it on parent re-render.
+// ── StableInput ──────────────────────────────────────────────────────────────
 const StableInput = ({ value, onChange, placeholder, isNumber, style }) => {
-  // We keep a LOCAL string copy so the parent re-render never interrupts typing
   const [local, setLocal] = useState(String(value ?? ""));
-  const committed = useRef(value);
+  const last = useRef(value);
 
-  // Only sync from parent when the parent's value truly changed from outside
-  // (e.g. month switch, clone) – NOT when the user is mid-type.
   useEffect(() => {
-    if (value !== committed.current) {
+    if (value !== last.current) {
       setLocal(String(value ?? ""));
-      committed.current = value;
+      last.current = value;
     }
   }, [value]);
 
-  const handleChange = (e) => {
+  const handle = e => {
     const raw = e.target.value;
     setLocal(raw);
-    const parsed = isNumber ? (raw === "" ? 0 : parseFloat(raw) || 0) : raw;
-    committed.current = parsed;
-    onChange(parsed);
+    const out = isNumber ? (raw === "" ? 0 : parseFloat(raw) || 0) : raw;
+    last.current = out;
+    onChange(out);
   };
 
   return (
@@ -42,7 +45,7 @@ const StableInput = ({ value, onChange, placeholder, isNumber, style }) => {
       type={isNumber ? "number" : "text"}
       inputMode={isNumber ? "decimal" : "text"}
       value={local}
-      onChange={handleChange}
+      onChange={handle}
       placeholder={placeholder}
       autoComplete="off"
       autoCorrect="off"
@@ -54,22 +57,123 @@ const StableInput = ({ value, onChange, placeholder, isNumber, style }) => {
   );
 };
 
+// ── ProgressBar ──────────────────────────────────────────────────────────────
+const ProgressBar = ({ pct, rule, color, alertOn, dark }) => (
+  <div style={{ position: "relative", height: 10, background: dark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.07)", borderRadius: 99, overflow: "hidden" }}>
+    <div style={{ height: "100%", width: `${Math.min(pct, 100)}%`, background: alertOn ? "#ef4444" : color, borderRadius: 99, transition: "width 0.5s ease" }} />
+    <div style={{ position: "absolute", top: 0, left: `${rule}%`, width: 2, height: "100%", background: "rgba(255,255,255,0.4)" }} />
+  </div>
+);
+
+// ── Card ─────────────────────────────────────────────────────────────────────
+const Card = ({ children, style: s = {}, surface, border, dark }) => (
+  <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: 24, padding: 20, boxShadow: dark ? "0 4px 24px rgba(0,0,0,0.4)" : "0 4px 24px rgba(99,102,241,0.08)", ...s }}>
+    {children}
+  </div>
+);
+
+// ── SmallCard ────────────────────────────────────────────────────────────────
+const SmallCard = ({ icon: Icon, label, value, sub, color, accentLight, border, text, muted }) => (
+  <div style={{ background: accentLight, border: `1px solid ${border}`, borderRadius: 20, padding: "16px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+      <div style={{ background: color + "22", borderRadius: 10, padding: 6, display: "flex" }}><Icon size={16} color={color} /></div>
+      <span style={{ fontSize: 11, color: muted, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>{label}</span>
+    </div>
+    <div style={{ fontSize: 22, fontWeight: 700, color: text, fontVariantNumeric: "tabular-nums" }}>{value}</div>
+    {sub && <div style={{ fontSize: 12, color: muted }}>{sub}</div>}
+  </div>
+);
+
+// ── BmRow ────────────────────────────────────────────────────────────────────
+const BmRow = ({ label, cur, comp, field, border, muted, text, accent, dark }) => {
+  const diff = Math.round(cur - comp);
+  const good = field === "invest" ? cur >= comp : cur <= comp;
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${border}` }}>
+      <span style={{ fontSize: 11, color: muted, width: 40 }}>{label}</span>
+      <span style={{ fontSize: 12, fontWeight: 700, color: text, width: 30 }}>{cur}%</span>
+      <div style={{ flex: 1, height: 5, background: dark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.07)", borderRadius: 99, overflow: "hidden" }}>
+        <div style={{ height: "100%", width: `${Math.min(comp, 100)}%`, background: accent + "55", borderRadius: 99 }} />
+      </div>
+      <span style={{ fontSize: 10, color: muted, width: 26 }}>{comp}%</span>
+      <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 99, background: good ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)", color: good ? "#10b981" : "#ef4444" }}>
+        {diff > 0 ? "+" : ""}{diff}%
+      </span>
+    </div>
+  );
+};
+
+// ── LedgerRow ────────────────────────────────────────────────────────────────
+const LedgerRow = ({ item, cat, color, dark, border, text, muted, inputBg, onToggle, onUpdate, onDelete }) => (
+  <div style={{
+    display: "flex", alignItems: "center", gap: 8,
+    background: item.settled ? (dark ? "rgba(16,185,129,0.08)" : "rgba(16,185,129,0.06)") : inputBg,
+    border: `1px solid ${item.settled ? "rgba(16,185,129,0.25)" : border}`,
+    borderRadius: 14, padding: "10px 12px",
+  }}>
+    <button
+      onClick={() => onToggle(cat, item.id)}
+      style={{ width: 34, height: 34, borderRadius: 9, border: `2px solid ${item.settled ? "#10b981" : border}`, background: item.settled ? "#10b981" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}
+    >
+      {item.settled && <Check size={15} color="#fff" strokeWidth={3} />}
+    </button>
+    <StableInput
+      value={item.name}
+      onChange={v => onUpdate(cat, item.id, "name", v)}
+      placeholder="Item name…"
+      isNumber={false}
+      style={{ flex: 1, minWidth: 0, background: "transparent", border: "none", outline: "none", color: item.settled ? "#10b981" : text, fontSize: 16, fontWeight: 500, textDecoration: item.settled ? "line-through" : "none", padding: "3px 0", fontFamily: "inherit" }}
+    />
+    <StableInput
+      value={item.amount}
+      onChange={v => onUpdate(cat, item.id, "amount", v)}
+      placeholder="0"
+      isNumber={true}
+      style={{ width: 90, flexShrink: 0, background: "transparent", border: "none", outline: "none", color: item.settled ? "#10b981" : color, fontSize: 16, fontWeight: 700, textAlign: "right", fontVariantNumeric: "tabular-nums", padding: "3px 0", fontFamily: "inherit" }}
+    />
+    <button onClick={() => onDelete(cat, item.id)} style={{ background: "transparent", border: "none", cursor: "pointer", padding: 6, display: "flex", flexShrink: 0 }}>
+      <X size={16} color={muted} />
+    </button>
+  </div>
+);
+
+// ── LedgerSection ────────────────────────────────────────────────────────────
+const LedgerSection = ({ title, cat, icon: Icon, color, total, items, dark, border, text, muted, inputBg, onToggle, onUpdate, onDelete, onAdd }) => (
+  <div style={{ marginBottom: 24 }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+      <div style={{ background: color + "22", borderRadius: 10, padding: 7, display: "flex" }}><Icon size={16} color={color} /></div>
+      <span style={{ fontWeight: 700, color: text, fontSize: 14 }}>{title}</span>
+      <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 700, color }}>{fmtINR(total)}</span>
+    </div>
+    <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+      {items.map(item => (
+        <LedgerRow key={item.id} item={item} cat={cat} color={color} dark={dark} border={border} text={text} muted={muted} inputBg={inputBg} onToggle={onToggle} onUpdate={onUpdate} onDelete={onDelete} />
+      ))}
+    </div>
+    <button onClick={() => onAdd(cat)} style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: color + "12", border: `1.5px dashed ${color}55`, borderRadius: 12, padding: "11px 14px", cursor: "pointer", color, fontSize: 13, fontWeight: 600, width: "100%" }}>
+      <Plus size={14} /> Add {title.split("/")[0].trim()} Item
+    </button>
+  </div>
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ── App ──────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
 export default function App() {
-  const [user, setUser]         = useState(null);
-  const [loading, setLoading]   = useState(true);
-  const [dark, setDark]         = useState(true);
-  const [year, setYear]         = useState(2026);
-  const [month, setMonth]       = useState(new Date().getMonth() + 1);
-  const [allData, setAllData]   = useState({});
+  const [user, setUser]             = useState(null);
+  const [loading, setLoading]       = useState(true);
+  const [dark, setDark]             = useState(true);
+  const [year, setYear]             = useState(2026);
+  const [month, setMonth]           = useState(new Date().getMonth() + 1);
+  const [allData, setAllData]       = useState({});
   const [editSalary, setEditSalary] = useState(false);
   const [salaryLocal, setSalaryLocal] = useState("");
-  const [saving, setSaving]     = useState(false);
+  const [saving, setSaving]         = useState(false);
   const [loginError, setLoginError] = useState("");
-  const saveTimer = useRef(null);   // debounce timer for Firestore writes
+  const saveTimer = useRef(null);
 
-  // ── Auth ──────────────────────────────────────────────────────────────────
   useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setLoading(false); });
+    const unsub = onAuthStateChanged(auth, u => { setUser(u); setLoading(false); });
     return unsub;
   }, []);
 
@@ -79,7 +183,6 @@ export default function App() {
       .catch(() => setLoginError("Login failed. Please try again."));
   }, []);
 
-  // ── Load data once after login ────────────────────────────────────────────
   useEffect(() => {
     if (!user) return;
     (async () => {
@@ -90,15 +193,12 @@ export default function App() {
     })();
   }, [user]);
 
-  // ── Mobile viewport fix ───────────────────────────────────────────────────
   useEffect(() => {
-    const fn = () => document.documentElement.style.setProperty('--vh', `${window.innerHeight * 0.01}px`);
-    fn(); window.addEventListener('resize', fn);
-    return () => window.removeEventListener('resize', fn);
+    const fn = () => document.documentElement.style.setProperty("--vh", `${window.innerHeight * 0.01}px`);
+    fn(); window.addEventListener("resize", fn);
+    return () => window.removeEventListener("resize", fn);
   }, []);
 
-  // ── DEBOUNCED save: fires 1.5 s after the last keystroke ──────────────────
-  // This is the core fix — we never write to Firestore mid-keystroke.
   const scheduleSave = useCallback((data) => {
     if (!user) return;
     clearTimeout(saveTimer.current);
@@ -111,15 +211,14 @@ export default function App() {
   }, [user]);
 
   const monthKey  = `${year}-${month}`;
-  const monthData = useMemo(() => allData[monthKey] || EMPTY_MONTH(), [allData, monthKey]);
+  const monthData = useMemo(() => allData[monthKey] || EMPTY(), [allData, monthKey]);
 
-  // ── Mutate local state immediately; schedule cloud save ───────────────────
   const setMonthData = useCallback((updater) => {
     setAllData(prev => {
-      const cur  = prev[monthKey] || EMPTY_MONTH();
-      const next = typeof updater === "function" ? updater(cur) : updater;
+      const cur     = prev[monthKey] || EMPTY();
+      const next    = typeof updater === "function" ? updater(cur) : updater;
       const updated = { ...prev, [monthKey]: next };
-      scheduleSave(updated);   // debounced — does NOT block render
+      scheduleSave(updated);
       return updated;
     });
   }, [monthKey, scheduleSave]);
@@ -135,91 +234,65 @@ export default function App() {
     let nm = month + 1, ny = year;
     if (nm > 12) { nm = 1; ny++; }
     setAllData(prev => {
-      const updated = {
-        ...prev,
-        [`${ny}-${nm}`]: {
-          salary: 0,
-          items: {
-            debt:        monthData.items.debt.map(i        => ({ ...i, id: uid(), amount: 0, settled: false })),
-            expenses:    monthData.items.expenses.map(i    => ({ ...i, id: uid(), amount: 0, settled: false })),
-            investments: monthData.items.investments.map(i => ({ ...i, id: uid(), amount: 0, settled: false })),
-          }
-        }
-      };
+      const updated = { ...prev, [`${ny}-${nm}`]: { salary: 0, items: {
+        debt:        monthData.items.debt.map(i        => ({ ...i, id: uid(), amount: 0, settled: false })),
+        expenses:    monthData.items.expenses.map(i    => ({ ...i, id: uid(), amount: 0, settled: false })),
+        investments: monthData.items.investments.map(i => ({ ...i, id: uid(), amount: 0, settled: false })),
+      }}};
       scheduleSave(updated);
       return updated;
     });
     setMonth(nm); setYear(ny);
   };
 
-  // ── Item CRUD ─────────────────────────────────────────────────────────────
   const updateItem = useCallback((cat, id, field, value) => {
-    setMonthData(prev => ({
-      ...prev,
-      items: {
-        ...prev.items,
-        [cat]: prev.items[cat].map(i => i.id === id ? { ...i, [field]: value } : i)
-      }
-    }));
+    setMonthData(prev => ({ ...prev, items: { ...prev.items,
+      [cat]: prev.items[cat].map(i => i.id === id ? { ...i, [field]: value } : i)
+    }}));
   }, [setMonthData]);
-
-  const addItem = (cat) => {
-    setMonthData(prev => ({
-      ...prev,
-      items: { ...prev.items, [cat]: [...prev.items[cat], { id: uid(), name: "", amount: 0, settled: false }] }
-    }));
-  };
-
-  const deleteItem = (cat, id) => {
-    setMonthData(prev => ({
-      ...prev,
-      items: { ...prev.items, [cat]: prev.items[cat].filter(i => i.id !== id) }
-    }));
-  };
 
   const toggleSettled = useCallback((cat, id) => {
-    setMonthData(prev => ({
-      ...prev,
-      items: {
-        ...prev.items,
-        [cat]: prev.items[cat].map(i => i.id === id ? { ...i, settled: !i.settled } : i)
-      }
-    }));
+    setMonthData(prev => ({ ...prev, items: { ...prev.items,
+      [cat]: prev.items[cat].map(i => i.id === id ? { ...i, settled: !i.settled } : i)
+    }}));
   }, [setMonthData]);
 
-  // ── Salary ────────────────────────────────────────────────────────────────
-  const openSalaryEdit = () => {
-    setSalaryLocal(monthData.salary ? String(monthData.salary) : "");
-    setEditSalary(true);
-  };
-  const commitSalary = () => {
-    setMonthData(prev => ({ ...prev, salary: parseFloat(salaryLocal) || 0 }));
-    setEditSalary(false);
-  };
+  const addItem = useCallback((cat) => {
+    setMonthData(prev => ({ ...prev, items: { ...prev.items,
+      [cat]: [...prev.items[cat], { id: uid(), name: "", amount: 0, settled: false }]
+    }}));
+  }, [setMonthData]);
 
-  // ── Derived values ────────────────────────────────────────────────────────
+  const deleteItem = useCallback((cat, id) => {
+    setMonthData(prev => ({ ...prev, items: { ...prev.items,
+      [cat]: prev.items[cat].filter(i => i.id !== id)
+    }}));
+  }, [setMonthData]);
+
+  const openSalaryEdit = () => { setSalaryLocal(monthData.salary ? String(monthData.salary) : ""); setEditSalary(true); };
+  const commitSalary   = () => { setMonthData(prev => ({ ...prev, salary: parseFloat(salaryLocal) || 0 })); setEditSalary(false); };
+
   const { salary, items } = monthData;
-  const allItems        = [...items.debt, ...items.expenses, ...items.investments];
-  const totalDebt       = items.debt.reduce((s, i)        => s + (Number(i.amount) || 0), 0);
-  const totalExpenses   = items.expenses.reduce((s, i)    => s + (Number(i.amount) || 0), 0);
-  const totalInvest     = items.investments.reduce((s, i) => s + (Number(i.amount) || 0), 0);
-  const totalAll        = totalDebt + totalExpenses + totalInvest;
-  const surplus         = salary - totalAll;
-  const settledCount    = allItems.filter(i => i.settled).length;
-  const settledPct      = allItems.length ? Math.round((settledCount / allItems.length) * 100) : 0;
-  const pctOf           = v => salary > 0 ? Math.round((v / salary) * 100) : 0;
-  const needsPct        = pctOf(totalDebt);
-  const wantsPct        = pctOf(totalExpenses);
-  const investPct       = pctOf(totalInvest);
-  const needsAlert      = needsPct > RULE.needs;
-  const investAlert     = investPct < RULE.invest && salary > 0;
-  const donutData       = [
-    { name: "Debt/Needs",      value: totalDebt },
-    { name: "Expenses/Wants",  value: totalExpenses },
-    { name: "Investments",     value: totalInvest },
+  const allItems   = [...items.debt, ...items.expenses, ...items.investments];
+  const totalDebt  = items.debt.reduce((s, i)        => s + (Number(i.amount) || 0), 0);
+  const totalExp   = items.expenses.reduce((s, i)    => s + (Number(i.amount) || 0), 0);
+  const totalInv   = items.investments.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+  const totalAll   = totalDebt + totalExp + totalInv;
+  const surplus    = salary - totalAll;
+  const settledCount = allItems.filter(i => i.settled).length;
+  const settledPct   = allItems.length ? Math.round((settledCount / allItems.length) * 100) : 0;
+  const pctOf      = v => salary > 0 ? Math.round((v / salary) * 100) : 0;
+  const needsPct   = pctOf(totalDebt);
+  const wantsPct   = pctOf(totalExp);
+  const investPct  = pctOf(totalInv);
+  const needsAlert  = needsPct > RULE.needs;
+  const investAlert = investPct < RULE.invest && salary > 0;
+  const donutData   = [
+    { name: "Debt/Needs",     value: totalDebt },
+    { name: "Expenses/Wants", value: totalExp  },
+    { name: "Investments",    value: totalInv  },
   ].filter(d => d.value > 0);
 
-  // ── Theme ─────────────────────────────────────────────────────────────────
   const bg          = dark ? "#0f0f1a" : "#f4f4f8";
   const surface     = dark ? "#1a1a2e" : "#ffffff";
   const surface2    = dark ? "#16213e" : "#f0f0f8";
@@ -229,133 +302,14 @@ export default function App() {
   const accent      = "#6366f1";
   const accentLight = dark ? "rgba(99,102,241,0.15)" : "rgba(99,102,241,0.08)";
   const inputBg     = dark ? "#0d0d18" : "#f8f8ff";
-  const fmtINR      = n => new Intl.NumberFormat("en-IN", { style: "currency", currency: "INR", maximumFractionDigits: 0 }).format(n || 0);
+  const th = { dark, border, text, muted, accent, accentLight, surface, surface2, inputBg };
 
-  // ── Sub-components (all defined outside render path) ─────────────────────
-  const ProgressBar = ({ pct, rule, color, alertOn }) => (
-    <div style={{ position: "relative", height: 10, background: dark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.07)", borderRadius: 99, overflow: "hidden" }}>
-      <div style={{ height: "100%", width: `${Math.min(pct, 100)}%`, background: alertOn ? "#ef4444" : color, borderRadius: 99, transition: "width 0.5s ease" }} />
-      <div style={{ position: "absolute", top: 0, left: `${rule}%`, width: 2, height: "100%", background: "rgba(255,255,255,0.4)" }} />
-    </div>
-  );
-
-  const Card = ({ children, style: s = {} }) => (
-    <div style={{ background: surface, border: `1px solid ${border}`, borderRadius: 24, padding: 20, boxShadow: dark ? "0 4px 24px rgba(0,0,0,0.4)" : "0 4px 24px rgba(99,102,241,0.08)", ...s }}>
-      {children}
-    </div>
-  );
-
-  const SmallCard = ({ icon: Icon, label, value, sub, color = accent }) => (
-    <div style={{ background: accentLight, border: `1px solid ${border}`, borderRadius: 20, padding: "16px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <div style={{ background: color + "22", borderRadius: 10, padding: 6, display: "flex" }}><Icon size={16} color={color} /></div>
-        <span style={{ fontSize: 11, color: muted, fontWeight: 600, letterSpacing: "0.06em", textTransform: "uppercase" }}>{label}</span>
-      </div>
-      <div style={{ fontSize: 22, fontWeight: 700, color: text, fontVariantNumeric: "tabular-nums" }}>{value}</div>
-      {sub && <div style={{ fontSize: 12, color: muted }}>{sub}</div>}
-    </div>
-  );
-
-  // ── LedgerSection: updateItem passed as prop so it's stable ──────────────
-  const LedgerSection = ({ title, cat, icon: Icon, color, total }) => (
-    <div style={{ marginBottom: 24 }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
-        <div style={{ background: color + "22", borderRadius: 10, padding: 7, display: "flex" }}><Icon size={16} color={color} /></div>
-        <span style={{ fontWeight: 700, color: text, fontSize: 14 }}>{title}</span>
-        <span style={{ marginLeft: "auto", fontSize: 13, fontWeight: 700, color }}>{fmtINR(total)}</span>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
-        {monthData.items[cat].map(item => (
-          <div key={item.id} style={{
-            display: "flex", alignItems: "center", gap: 8,
-            background: item.settled ? (dark ? "rgba(16,185,129,0.08)" : "rgba(16,185,129,0.06)") : inputBg,
-            border: `1px solid ${item.settled ? "rgba(16,185,129,0.25)" : border}`,
-            borderRadius: 14, padding: "10px 12px",
-          }}>
-            {/* Settle toggle */}
-            <button
-              onClick={() => toggleSettled(cat, item.id)}
-              style={{ width: 34, height: 34, borderRadius: 9, border: `2px solid ${item.settled ? "#10b981" : border}`, background: item.settled ? "#10b981" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", flexShrink: 0 }}
-            >
-              {item.settled && <Check size={15} color="#fff" strokeWidth={3} />}
-            </button>
-
-            {/* ✅ Name field — StableInput keeps focus through re-renders */}
-            <StableInput
-              value={item.name}
-              onChange={v => updateItem(cat, item.id, "name", v)}
-              placeholder="Item name…"
-              isNumber={false}
-              style={{
-                flex: 1, minWidth: 0,
-                background: "transparent", border: "none", outline: "none",
-                color: item.settled ? "#10b981" : text,
-                fontSize: 16, fontWeight: 500,
-                textDecoration: item.settled ? "line-through" : "none",
-                padding: "3px 0", fontFamily: "inherit",
-              }}
-            />
-
-            {/* ✅ Amount field */}
-            <StableInput
-              value={item.amount}
-              onChange={v => updateItem(cat, item.id, "amount", v)}
-              placeholder="0"
-              isNumber={true}
-              style={{
-                width: 90, flexShrink: 0,
-                background: "transparent", border: "none", outline: "none",
-                color: item.settled ? "#10b981" : color,
-                fontSize: 16, fontWeight: 700,
-                textAlign: "right", fontVariantNumeric: "tabular-nums",
-                padding: "3px 0", fontFamily: "inherit",
-              }}
-            />
-
-            {/* Delete */}
-            <button onClick={() => deleteItem(cat, item.id)} style={{ background: "transparent", border: "none", cursor: "pointer", padding: 6, display: "flex", flexShrink: 0 }}>
-              <X size={16} color={muted} />
-            </button>
-          </div>
-        ))}
-      </div>
-
-      <button
-        onClick={() => addItem(cat)}
-        style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "center", gap: 6, background: color + "12", border: `1.5px dashed ${color}55`, borderRadius: 12, padding: "11px 14px", cursor: "pointer", color, fontSize: 13, fontWeight: 600, width: "100%" }}
-      >
-        <Plus size={14} /> Add {title.split("/")[0].trim()} Item
-      </button>
-    </div>
-  );
-
-  const BmRow = ({ label, cur, comp, field }) => {
-    const diff = Math.round(cur - comp);
-    const good = field === "invest" ? cur >= comp : cur <= comp;
-    return (
-      <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "7px 0", borderBottom: `1px solid ${border}` }}>
-        <span style={{ fontSize: 11, color: muted, width: 40 }}>{label}</span>
-        <span style={{ fontSize: 12, fontWeight: 700, color: text, width: 30 }}>{cur}%</span>
-        <div style={{ flex: 1, height: 5, background: dark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.07)", borderRadius: 99, overflow: "hidden" }}>
-          <div style={{ height: "100%", width: `${Math.min(comp, 100)}%`, background: accent + "55", borderRadius: 99 }} />
-        </div>
-        <span style={{ fontSize: 10, color: muted, width: 26 }}>{comp}%</span>
-        <span style={{ fontSize: 10, fontWeight: 700, padding: "2px 6px", borderRadius: 99, background: good ? "rgba(16,185,129,0.15)" : "rgba(239,68,68,0.15)", color: good ? "#10b981" : "#ef4444" }}>
-          {diff > 0 ? "+" : ""}{diff}%
-        </span>
-      </div>
-    );
-  };
-
-  // ── Loading screen ────────────────────────────────────────────────────────
   if (loading) return (
     <div style={{ minHeight: "100vh", background: "#0f0f1a", display: "flex", alignItems: "center", justifyContent: "center" }}>
       <div style={{ color: "#6366f1", fontSize: 16, fontFamily: "sans-serif" }}>Loading…</div>
     </div>
   );
 
-  // ── Login screen ──────────────────────────────────────────────────────────
   if (!user) return (
     <div style={{ minHeight: "100vh", background: "#0f0f1a", display: "flex", alignItems: "center", justifyContent: "center", fontFamily: "'DM Sans',sans-serif", padding: 16 }}>
       <style>{`@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;700&display=swap');`}</style>
@@ -364,10 +318,7 @@ export default function App() {
         <h1 style={{ fontSize: 26, fontWeight: 700, color: "#e2e8f0", marginBottom: 8 }}>Financial Intelligence</h1>
         <p style={{ fontSize: 14, color: "#94a3b8", marginBottom: 32, lineHeight: 1.6 }}>Sign in to access your personal finance tracker. Your data is private and saved securely.</p>
         {loginError && <p style={{ fontSize: 12, color: "#ef4444", marginBottom: 16 }}>{loginError}</p>}
-        <button
-          onClick={() => { setLoginError(""); signInWithRedirect(auth, provider); }}
-          style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: "#fff", color: "#1e1b4b", border: "none", borderRadius: 14, padding: "15px 20px", cursor: "pointer", fontSize: 15, fontWeight: 700 }}
-        >
+        <button onClick={() => { setLoginError(""); signInWithRedirect(auth, provider); }} style={{ width: "100%", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, background: "#fff", color: "#1e1b4b", border: "none", borderRadius: 14, padding: "15px 20px", cursor: "pointer", fontSize: 15, fontWeight: 700 }}>
           <svg width="20" height="20" viewBox="0 0 48 48">
             <path fill="#FFC107" d="M43.611 20.083H42V20H24v8h11.303c-1.649 4.657-6.08 8-11.303 8-6.627 0-12-5.373-12-12s5.373-12 12-12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 12.955 4 4 12.955 4 24s8.955 20 20 20 20-8.955 20-20c0-1.341-.138-2.65-.389-3.917z"/>
             <path fill="#FF3D00" d="M6.306 14.691l6.571 4.819C14.655 15.108 18.961 12 24 12c3.059 0 5.842 1.154 7.961 3.039l5.657-5.657C34.046 6.053 29.268 4 24 4 16.318 4 9.656 8.337 6.306 14.691z"/>
@@ -381,7 +332,6 @@ export default function App() {
     </div>
   );
 
-  // ── Main app ──────────────────────────────────────────────────────────────
   return (
     <div style={{ background: bg, fontFamily: "'DM Sans','Segoe UI',sans-serif", color: text }}>
       <style>{`
@@ -389,7 +339,6 @@ export default function App() {
         *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
         html { height: -webkit-fill-available; }
         body { min-height: 100vh; min-height: -webkit-fill-available; overscroll-behavior: none; }
-        /* Critical: 16px prevents iOS auto-zoom which causes scroll jump */
         input { font-size: 16px !important; font-family: inherit; background: transparent; }
         input[type=number]::-webkit-inner-spin-button,
         input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; }
@@ -401,7 +350,7 @@ export default function App() {
 
       <div style={{ maxWidth: 800, margin: "0 auto", padding: "0 16px 80px" }}>
 
-        {/* ── Header ── */}
+        {/* Header */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 0 16px" }}>
           <div>
             <div style={{ fontSize: 11, color: accent, fontWeight: 700, letterSpacing: "0.12em", textTransform: "uppercase", marginBottom: 4 }}>◆ Finvault</div>
@@ -419,8 +368,8 @@ export default function App() {
           </div>
         </div>
 
-        {/* ── Month Nav ── */}
-        <Card style={{ marginBottom: 16 }}>
+        {/* Month Nav */}
+        <Card {...th} style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
             <button onClick={() => navMonth(-1)} style={{ background: accentLight, border: `1px solid ${border}`, borderRadius: 10, padding: "10px 14px", cursor: "pointer", display: "flex" }}>
               <ChevronLeft size={18} color={accent} />
@@ -438,7 +387,7 @@ export default function App() {
           </button>
         </Card>
 
-        {/* ── Alerts ── */}
+        {/* Alerts */}
         {(needsAlert || investAlert) && (
           <div style={{ marginBottom: 16 }}>
             {needsAlert && (
@@ -462,9 +411,8 @@ export default function App() {
           </div>
         )}
 
-        {/* ── Summary Cards ── */}
+        {/* Summary Cards */}
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
-          {/* Opening Balance */}
           <div style={{ background: accentLight, border: `1px solid ${border}`, borderRadius: 20, padding: "16px 18px", gridColumn: "1 / -1" }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
               <div style={{ background: accent + "22", borderRadius: 10, padding: 6, display: "flex" }}><DollarSign size={16} color={accent} /></div>
@@ -475,17 +423,7 @@ export default function App() {
             </div>
             {editSalary ? (
               <div style={{ display: "flex", gap: 8 }}>
-                <input
-                  type="number"
-                  inputMode="decimal"
-                  value={salaryLocal}
-                  onChange={e => setSalaryLocal(e.target.value)}
-                  onKeyDown={e => e.key === "Enter" && commitSalary()}
-                  enterKeyHint="done"
-                  autoFocus
-                  placeholder="Enter amount…"
-                  style={{ flex: 1, background: inputBg, border: `1px solid ${accent}`, borderRadius: 10, padding: "12px 14px", color: text, fontSize: 16, fontWeight: 700, outline: "none", fontFamily: "inherit" }}
-                />
+                <input type="number" inputMode="decimal" value={salaryLocal} onChange={e => setSalaryLocal(e.target.value)} onKeyDown={e => e.key === "Enter" && commitSalary()} enterKeyHint="done" autoFocus placeholder="Enter amount…" style={{ flex: 1, background: inputBg, border: `1px solid ${accent}`, borderRadius: 10, padding: "12px 14px", color: text, fontSize: 16, fontWeight: 700, outline: "none", fontFamily: "inherit" }} />
                 <button onClick={commitSalary} style={{ background: accent, border: "none", borderRadius: 10, padding: "12px 18px", cursor: "pointer", color: "#fff", fontSize: 14, fontWeight: 600, flexShrink: 0 }}>Save</button>
               </div>
             ) : (
@@ -493,21 +431,20 @@ export default function App() {
             )}
             <div style={{ fontSize: 11, color: muted, marginTop: 4 }}>Take-home salary — tap ✎ to edit</div>
           </div>
-
-          <SmallCard icon={surplus >= 0 ? TrendingUp : TrendingDown} label="Surplus / Deficit" value={fmtINR(surplus)} sub={surplus >= 0 ? "Positive cashflow" : "Budget exceeded"} color={surplus >= 0 ? "#10b981" : "#ef4444"} />
-          <SmallCard icon={CheckCircle2} label="Settlement" value={`${settledPct}%`} sub={`${settledCount}/${allItems.length} items paid`} color="#6366f1" />
+          <SmallCard icon={surplus >= 0 ? TrendingUp : TrendingDown} label="Surplus / Deficit" value={fmtINR(surplus)} sub={surplus >= 0 ? "Positive cashflow" : "Budget exceeded"} color={surplus >= 0 ? "#10b981" : "#ef4444"} {...th} />
+          <SmallCard icon={CheckCircle2} label="Settlement" value={`${settledPct}%`} sub={`${settledCount}/${allItems.length} items paid`} color={accent} {...th} />
         </div>
 
-        {/* ── Financial Matrix ── */}
-        <Card style={{ marginBottom: 16 }}>
+        {/* Financial Matrix */}
+        <Card {...th} style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
             <Target size={17} color={accent} />
             <h2 style={{ fontSize: 15, fontWeight: 700, color: text }}>Financial Matrix — 41:20:39 Rule</h2>
           </div>
           {[
-            { label: "Needs / Debt",      pct: needsPct,  rule: RULE.needs,  color: DONUT_COLORS.debt,        amt: totalDebt,     alert: needsAlert },
-            { label: "Wants / Expenses",  pct: wantsPct,  rule: RULE.wants,  color: DONUT_COLORS.expenses,    amt: totalExpenses, alert: false },
-            { label: "Investments",       pct: investPct, rule: RULE.invest, color: DONUT_COLORS.investments, amt: totalInvest,   alert: investAlert },
+            { label: "Needs / Debt",     pct: needsPct,  rule: RULE.needs,  color: DC.debt,        amt: totalDebt, alert: needsAlert },
+            { label: "Wants / Expenses", pct: wantsPct,  rule: RULE.wants,  color: DC.expenses,    amt: totalExp,  alert: false },
+            { label: "Investments",      pct: investPct, rule: RULE.invest, color: DC.investments, amt: totalInv,  alert: investAlert },
           ].map(row => (
             <div key={row.label} style={{ marginBottom: 14 }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
@@ -520,14 +457,14 @@ export default function App() {
                   <span style={{ fontSize: 12, fontWeight: 700, color: row.alert ? "#ef4444" : row.color }}>{row.pct}%</span>
                 </div>
               </div>
-              <ProgressBar pct={row.pct} rule={row.rule} color={row.color} alertOn={row.alert} />
+              <ProgressBar pct={row.pct} rule={row.rule} color={row.color} alertOn={row.alert} dark={dark} />
               <div style={{ fontSize: 11, color: muted, marginTop: 4, textAlign: "right" }}>{fmtINR(row.amt)}</div>
             </div>
           ))}
         </Card>
 
-        {/* ── Donut Chart ── */}
-        <Card style={{ marginBottom: 16 }}>
+        {/* Donut Chart */}
+        <Card {...th} style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
             <BarChart3 size={17} color={accent} />
             <h2 style={{ fontSize: 15, fontWeight: 700, color: text }}>Allocation Breakdown</h2>
@@ -538,14 +475,14 @@ export default function App() {
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie data={donutData} cx="50%" cy="50%" innerRadius={65} outerRadius={95} paddingAngle={3} dataKey="value" strokeWidth={0}>
-                      {donutData.map((_, i) => <Cell key={i} fill={[DONUT_COLORS.debt, DONUT_COLORS.expenses, DONUT_COLORS.investments][i]} />)}
+                      {donutData.map((_, i) => <Cell key={i} fill={[DC.debt, DC.expenses, DC.investments][i]} />)}
                     </Pie>
                     <Tooltip formatter={v => fmtINR(v)} contentStyle={{ background: surface2, border: `1px solid ${border}`, borderRadius: 12, fontSize: 12, color: text }} />
                   </PieChart>
                 </ResponsiveContainer>
               </div>
               <div style={{ display: "flex", justifyContent: "center", gap: 20, flexWrap: "wrap", marginTop: 8 }}>
-                {[{ label: "Debt", color: DONUT_COLORS.debt, val: totalDebt }, { label: "Expenses", color: DONUT_COLORS.expenses, val: totalExpenses }, { label: "Investments", color: DONUT_COLORS.investments, val: totalInvest }].map(l => (
+                {[{ label: "Debt", color: DC.debt, val: totalDebt }, { label: "Expenses", color: DC.expenses, val: totalExp }, { label: "Investments", color: DC.investments, val: totalInv }].map(l => (
                   <div key={l.label} style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <div style={{ width: 10, height: 10, borderRadius: 3, background: l.color }} />
                     <span style={{ fontSize: 12, color: muted }}>{l.label}</span>
@@ -559,8 +496,8 @@ export default function App() {
           )}
         </Card>
 
-        {/* ── Benchmarking ── */}
-        <Card style={{ marginBottom: 16 }}>
+        {/* Benchmarking */}
+        <Card {...th} style={{ marginBottom: 16 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
             <TrendingUp size={17} color={accent} />
             <h2 style={{ fontSize: 15, fontWeight: 700, color: text }}>Benchmarking</h2>
@@ -572,26 +509,25 @@ export default function App() {
               return (
                 <div key={label} style={{ background: surface2, borderRadius: 16, padding: "12px 14px", border: `1px solid ${border}` }}>
                   <div style={{ fontSize: 11, color: accent, fontWeight: 700, marginBottom: 10 }}>{label}</div>
-                  <BmRow label="Needs"  cur={needsPct}  comp={comp.needs}  field="needs" />
-                  <BmRow label="Wants"  cur={wantsPct}  comp={comp.wants}  field="wants" />
-                  <BmRow label="Invest" cur={investPct} comp={comp.invest} field="invest" />
+                  <BmRow label="Needs"  cur={needsPct}  comp={comp.needs}  field="needs"  {...th} />
+                  <BmRow label="Wants"  cur={wantsPct}  comp={comp.wants}  field="wants"  {...th} />
+                  <BmRow label="Invest" cur={investPct} comp={comp.invest} field="invest" {...th} />
                 </div>
               );
             })}
           </div>
         </Card>
 
-        {/* ── Strategic Ledger ── */}
-        <Card>
+        {/* Strategic Ledger */}
+        <Card {...th}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 20 }}>
             <Wallet size={17} color={accent} />
             <h2 style={{ fontSize: 15, fontWeight: 700, color: text }}>Strategic Ledger</h2>
             <span style={{ marginLeft: "auto", fontSize: 12, fontWeight: 700, color: text }}>{fmtINR(totalAll)}</span>
           </div>
-          <LedgerSection title="Credit Card / Debt"       cat="debt"        icon={CreditCard} color={DONUT_COLORS.debt}        total={totalDebt} />
-          <LedgerSection title="Other Expenses / Wants"   cat="expenses"    icon={Wallet}     color={DONUT_COLORS.expenses}    total={totalExpenses} />
-          <LedgerSection title="Mandatory Investments"    cat="investments" icon={Landmark}   color={DONUT_COLORS.investments} total={totalInvest} />
-
+          <LedgerSection title="Credit Card / Debt"     cat="debt"        icon={CreditCard} color={DC.debt}        total={totalDebt} items={items.debt}        onToggle={toggleSettled} onUpdate={updateItem} onDelete={deleteItem} onAdd={addItem} {...th} />
+          <LedgerSection title="Other Expenses / Wants" cat="expenses"    icon={Wallet}     color={DC.expenses}    total={totalExp}  items={items.expenses}    onToggle={toggleSettled} onUpdate={updateItem} onDelete={deleteItem} onAdd={addItem} {...th} />
+          <LedgerSection title="Mandatory Investments"  cat="investments" icon={Landmark}   color={DC.investments} total={totalInv}  items={items.investments} onToggle={toggleSettled} onUpdate={updateItem} onDelete={deleteItem} onAdd={addItem} {...th} />
           <div style={{ borderTop: `1px solid ${border}`, paddingTop: 16, marginTop: 4 }}>
             <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
               <span style={{ fontSize: 12, color: muted }}>Settlement Progress</span>
